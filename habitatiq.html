@@ -456,6 +456,18 @@ const apiPost = (ep, body)    => api('POST',   ep, body);
 const apiPut  = (ep, body)    => api('PUT',    ep, body);
 const apiFile = (ep, formData)=> api('POST',   ep, formData, true);
 
+function normalizeProperties(props) {
+  return (props || []).map(p => ({
+    ...p,
+    units: parseInt(p.total_units || p.units || 0),
+    occupied: parseInt(p.occupied_units || p.occupied || 0),
+    unitList: (p.units_list || p.unitList || []).map(u => ({
+      id: u.id, label: u.label, status: u.status, rent: parseFloat(u.rent || 0),
+      tenant: u.tenant || null, notes: u.notes || ''
+    }))
+  }));
+}
+
 // Show a temporary toast notification
 function showToast(msg, type = 'success') {
   const existing = document.getElementById('api-toast');
@@ -566,7 +578,18 @@ function showAuthScreen(screen){
   const target=document.getElementById(map[screen]);
   if(target) target.style.display='block';
   // populate property dropdown when opening tenant reg
-  if(screen==='reg-tenant') pubPopulateProperties();
+  if(screen==='reg-tenant') {
+    if(USE_API){
+      apiGet('/auth/properties.php').then(res=>{
+        if(res.success) { 
+          STATE.properties = normalizeProperties(res.data); 
+          pubPopulateProperties(); 
+        }
+      });
+    } else {
+      pubPopulateProperties();
+    }
+  }
 }
 
 function pubPopulateProperties(){
@@ -1186,6 +1209,8 @@ async function loadStateFromAPI(){
               }
             });
           }
+          // Normalize kyc status from API
+          if(t.kyc_status && !t.kyc) t.kyc = t.kyc_status;
           return t;
         });
       }
@@ -1194,6 +1219,7 @@ async function loadStateFromAPI(){
       const tRes = await apiGet('/tenants/index.php');
       if(tRes.success && tRes.data.length) {
         const t = tRes.data[0];
+        if(t.kyc_status && !t.kyc) t.kyc = t.kyc_status;
         STATE.currentUser.tenantData = t;
         // Update tenant in STATE array
         const idx = STATE.tenants.findIndex(x=>x.id===t.id);
@@ -1230,19 +1256,9 @@ async function loadStateFromAPI(){
     }
     // Load Analytics
     const anaRes = await apiGet('/analytics/index.php');
-    if(anaRes.success) STATE.analytics = anaRes.data.summary;
-    // Normalize properties to match frontend expected format
-    if(STATE.properties.length){
-      STATE.properties = STATE.properties.map(p=>({
-        ...p,
-        units: p.total_units||p.units||0,
-        occupied: p.occupied_units||p.occupied||0,
-        unitList: (p.units_list||[]).map(u=>({
-          id:u.id, label:u.label, status:u.status, rent:parseFloat(u.rent||0),
-          tenant:u.tenant||null, notes:u.notes||''
-        }))
-      }));
-    }
+    if(anaRes && anaRes.success && anaRes.data && anaRes.data.analytics) STATE.analytics = anaRes.data.analytics; // fallback if needed
+    if(anaRes.success && anaRes.data.summary) STATE.analytics = anaRes.data.summary;
+    STATE.properties = normalizeProperties(STATE.properties);
   } catch(e){ console.warn('loadStateFromAPI error:', e); }
 }
 
@@ -1691,7 +1707,7 @@ function renderPage(){
 function renderDashboard(){
   const cleared=STATE.tenants.filter(t=>t.status==='cleared').length;
   const flagged=STATE.tenants.filter(t=>t.status==='flagged').length;
-  const pendingKYC=STATE.tenants.filter(t=>t.kyc==='pending'&&t.kyc_submitted_at).length;
+  const pendingKYC=STATE.tenants.filter(t=>(t.kyc==='pending'||t.kyc==='submitted') && t.kyc_submitted_at).length;
   const totalArrears=STATE.tenants.reduce((s,t)=>s+t.arrears,0);
   const pendingLandlords=STATE.pendingLandlords.filter(l=>l.status==='pending').length;
   const pendingTenants=STATE.pendingApprovals.filter(a=>a.status==='pending').length;
@@ -1749,15 +1765,15 @@ function renderTenants(){
 }
 
 function tenantRow(t){
-  const kycBadge={verified:'<span class="badge green">✓ Verified</span>',pending:'<span class="badge warn">⏳ Pending</span>',rejected:'<span class="badge red">✗ Rejected</span>'}[t.kyc];
+  const kycBadge={verified:'<span class="badge green">✓ Verified</span>',pending:'<span class="badge warn">⏳ Pending</span>',submitted:'<span class="badge blue">Submitted</span>',rejected:'<span class="badge red">✗ Rejected</span>'}[t.kyc];
   const statusBadge={cleared:'<span class="badge green">Cleared</span>',flagged:'<span class="badge red">🚩 Flagged</span>',pending:'<span class="badge warn">Pending</span>',active:'<span class="badge blue">Active</span>'}[t.status];
   const colors={cleared:'#2D9D5F',flagged:'#E63946',pending:'#F4A261',active:'#3A86FF'};
   return `<tr><td><div style="display:flex;align-items:center;gap:10px"><div class="avatar" style="background:${colors[t.status]}">${t.name.split(' ').map(n=>n[0]).join('')}</div><div><div style="font-weight:500">${t.name}</div><div style="font-size:11px;color:var(--text3)">${t.id}</div></div></div></td><td style="font-family:monospace;font-size:13px">${t.national_id}</td><td>${t.phone}</td><td style="font-size:13px">${t.property}</td><td>${kycBadge}</td><td>${statusBadge}</td><td style="color:${t.balance>0?'var(--danger)':'var(--success)'};font-weight:500">${t.balance>0?'KES '+t.balance.toLocaleString():'✓ Clear'}</td><td><div style="display:flex;gap:6px"><button class="btn btn-outline btn-sm" onclick="viewTenant('${t.id}')">View</button><button class="btn btn-outline btn-sm" onclick="editTenant('${t.id}')">Edit</button></div></td></tr>`;
 }
 
 function renderKYC(){
-  const allPending  = STATE.tenants.filter(t=>t.kyc==='pending' && t.kyc_submitted_at);
-  const noDocsYet   = STATE.tenants.filter(t=>t.kyc==='pending' && !t.kyc_submitted_at);
+  const allPending  = STATE.tenants.filter(t=>(t.kyc==='pending' || t.kyc==='submitted') && t.kyc_submitted_at);
+  const noDocsYet   = STATE.tenants.filter(t=>(t.kyc==='pending' || t.kyc==='submitted') && !t.kyc_submitted_at);
   const rejected    = STATE.tenants.filter(t=>t.kyc==='rejected');
   const verified    = STATE.tenants.filter(t=>t.kyc==='verified');
 
@@ -2304,9 +2320,24 @@ function renderTenantKYC(){
   }
 
   // ── PENDING state — docs not yet submitted ──
-  if(!allSubmitted){
+  if(kyc === 'pending' && !allSubmitted){
+    const attemptsRemaining = MY_TENANT.kyc_attempts !== undefined ? 10 - MY_TENANT.kyc_attempts : 10;
+    const isLocked = MY_TENANT.kyc_lock_until && new Date(MY_TENANT.kyc_lock_until) > new Date();
+
+    if(isLocked){
+      const hours = Math.ceil((new Date(MY_TENANT.kyc_lock_until) - new Date()) / 3600000);
+      return `<div class="page-header"><h2>🪪 Identity Verification</h2><p>Verification Locked</p></div>
+      <div class="lockout-banner"><div class="lockout-icon">🔒</div><div>
+        <div class="lockout-title">Account verification locked</div>
+        <div class="lockout-msg">Too many failed verification attempts. Your account is locked from uploading for another <strong>${hours} hours</strong>. 
+        Your documents have been flagged for manual review by the landlord.</div>
+      </div></div>
+      <div class="card"><button class="btn btn-outline" style="width:100%" onclick="navigate('tenant_support')">💬 Contact Support</button></div>`;
+    }
+
     return `<div class="page-header"><h2>🪪 Identity Verification</h2><p>Complete your KYC to unlock full portal access</p></div>
     <div class="alert warn"><span>⚠️</span><div><strong>Action Required.</strong> Upload the 3 documents below to verify your identity. Your portal is in <strong>view-only mode</strong> until this is complete.</div></div>
+    ${attemptsRemaining < 10 ? `<div class="alert info"><span>💡</span><div>You have <strong>${attemptsRemaining} attempts</strong> remaining before your account is locked for 24 hours.</div></div>` : ''}
 
     <div class="card">
       <div class="card-title" style="margin-bottom:4px">What is KYC?</div>
@@ -2385,6 +2416,7 @@ function renderTenantKYC(){
   }
 
   // ── PENDING — docs submitted, awaiting admin review ──
+  if(kyc === 'pending' && allSubmitted){
   return `<div class="page-header"><h2>🪪 Identity Verification</h2><p>Documents submitted — awaiting review</p></div>
   <div class="alert info"><span>⏳</span><div><strong>Documents Submitted.</strong> Your documents were submitted on <strong>${MY_TENANT.kyc_submitted_at||'—'}</strong>. An administrator will review them shortly. You will be notified once the review is complete.</div></div>
   <div class="card">
@@ -2401,6 +2433,7 @@ function renderTenantKYC(){
       <p>🔓 Full portal access will be granted automatically upon approval.</p>
     </div>
   </div>`;
+  }
 }
 
 // ── KYC upload handler (simulates file selection, stores name + base64 preview) ──
@@ -2574,18 +2607,47 @@ function kycSubmitDocuments(){
   if(!t.kyc_docs || !t.kyc_docs.id_front || !t.kyc_docs.id_back || !t.kyc_docs.selfie){
     alert('Please upload all 3 documents before submitting.'); return;
   }
-  if(USE_API){
     const btn=document.querySelector('[onclick="kycSubmitDocuments()"]');
-    if(btn){btn.disabled=true;btn.textContent='Submitting...';}
-    apiPost('/kyc/kyc.php?action=submit',{tenant_id:t.id||t.user_id}).then(res=>{
-      if(btn){btn.disabled=false;btn.textContent='Submit for Verification';}
-      if(!res.success){showToast('Submission failed: '+(res.error||''),'error');return;}
-      t.kyc='submitted'; t.kyc_status='submitted';
-      t.kyc_submitted_at = new Date().toISOString().slice(0,10);
-      showKYCSubmittedModal();
+    if(btn){btn.disabled=true;btn.textContent='⚡ Running Verification Engine...';}
+    
+    // First submit (record submission)
+    apiPost('/kyc/kyc.php?action=submit',{tenant_id:t.id||t.user_id}).then(res1=>{
+      if(!res1.success){
+        if(btn){btn.disabled=false;btn.textContent='Submit for Verification';}
+        showToast('Submission failed: '+(res1.error||''),'error'); return;
+      }
+      
+      // Then immediately verify (real-time feedback)
+      apiPost('/kyc/kyc.php?action=verify',{tenant_id:t.id||t.user_id}).then(res2=>{
+        if(btn){btn.disabled=false;btn.textContent='Submit for Verification';}
+        
+        if(res2.success){
+          if(res2.data.auto_verified){
+            showModal('Identity Verified ✅', `
+              <div class="success-animation"><div class="sa-icon">✅</div><h3>Verification Successful!</h3>
+              <p>The AI engine has matched your documents with a high confidence score (${res2.data.overall_score}%). Your account is now fully active.</p></div>
+              <button class="btn btn-primary" onclick="window.location.reload()" style="width:100%;margin-top:12px;justify-content:center">🚀 Explore Portal</button>
+            `);
+          } else {
+            showKYCSubmittedModal();
+          }
+        } else {
+          // Failure (e.g. lockout or just failed check)
+          showModal('Verification Failed 🚫', `
+            <div style="text-align:center;padding:20px">
+              <div style="font-size:48px;margin-bottom:12px">❌</div>
+              <h3 style="color:var(--danger)">Identity Match Failed</h3>
+              <p style="font-size:14px;color:var(--text2);margin:10px 0">${res2.error || 'Your documents do not match our records.'}</p>
+              ${res2.data?.attempts_remaining !== undefined ? `<div class="badge warn" style="margin-top:10px">${res2.data.attempts_remaining} attempts remaining</div>` : ''}
+            </div>
+            <button class="btn btn-outline" onclick="closeModal();renderPage()" style="width:100%;justify-content:center">Retry Upload</button>
+          `);
+        }
+        // Refresh local state
+        apiGet('/auth/session.php').then(s=> { if(s.success) { STATE.currentUser.tenantData = s.data.tenant; renderPage(); }});
+      });
     });
     return;
-  }
   t.kyc='pending'; t.kyc_status='submitted';
   t.kyc_submitted_at = new Date().toISOString().slice(0,10);
   addAuditLog('kyc_submitted','kyc',`${t.name} submitted KYC documents for review`);
@@ -2603,6 +2665,20 @@ function showKYCSubmittedModal(){
     <div class="alert info" style="margin-top:4px"><span>⏱</span><div>Reviews typically complete within <strong>1–2 business days</strong>.</div></div>
     <button class="btn btn-primary" onclick="closeModal()" style="width:100%;margin-top:12px;justify-content:center">OK</button>
   `);
+}
+
+function autoLoginAfterRegister(email, password){
+  showToast('Authenticating...','info');
+  apiPost('/auth/login.php', {email:email, password:password}).then(res => {
+    if(res.success){
+      localStorage.setItem('habitatiq_token', res.data.token);
+      window.location.reload();
+    } else {
+      showToast('Auto-login failed. Please log in manually.', 'error');
+      closeModal();
+      renderPage();
+    }
+  });
 }
 
 function renderTenantClearance(){
@@ -3208,7 +3284,7 @@ function submitTenantRegistration(){
     </div>
     ${newTenant.kyc==='pending'?'<div class="alert warn"><span>⚠️</span><div>Remind tenant to complete KYC on first login.</div></div>':''}
     <div style="display:flex;gap:8px;margin-top:12px">
-      <button class="btn btn-primary" onclick="closeModal();renderPage()">Done</button>
+      <button class="btn btn-primary" onclick="autoLoginAfterRegister('${email}','${newTenant.password||'changeme'}')">🚀 Continue to Account</button>
       ${newTenant.kyc!=='verified'?`<button class="btn btn-outline" onclick="closeModal();navigate('kyc')">Go to KYC →</button>`:''}
     </div>
   </div></div></div>`;
@@ -3225,6 +3301,9 @@ function adminApproveKYC(id){
   if(!t) return;
   if(!t.kyc_submitted_at && t.kyc!=='submitted'){
     alert('Tenant has not submitted KYC documents yet.'); return;
+  }
+  if(!t._verificationResult){
+    alert('Please run the verification engine first to check document authenticity.'); return;
   }
   if(USE_API){
     const score = t._verificationResult?.overall_score || 100;
@@ -3485,8 +3564,8 @@ function reviewKYC(id){
     </div>`:''}
 
     <div style="display:flex;gap:6px;flex-wrap:wrap">
-      ${docCount>0?`<button class="btn btn-primary btn-sm" id="kyc-verify-btn-${t.id}" onclick="runKYCVerification('${t.id}')">🔍 Run Verification</button>`:''}
-      ${(t.kyc==='pending'||t.kyc==='submitted')&&t.kyc_submitted_at?`<button class="btn btn-success btn-sm" onclick="adminApproveKYC('${t.id}');closeModal()">✅ Approve</button><button class="btn btn-danger btn-sm" onclick="closeModal();adminRejectKYCPrompt('${t.id}')">✗ Reject</button>`:''}
+      ${docCount===3?`<button class="btn btn-primary btn-sm" id="kyc-verify-btn-${t.id}" onclick="runKYCVerification('${t.id}')">🔍 Run Verification Engine</button>`:''}
+      ${(t.kyc==='pending'||t.kyc==='submitted')&&t.kyc_submitted_at?`<button class="btn btn-success btn-sm" ${!prevResult?'disabled title="Run verification engine first" style="opacity:0.6;cursor:not-allowed"':''} onclick="adminApproveKYC('${t.id}')">✅ Approve KYC</button><button class="btn btn-danger btn-sm" onclick="closeModal();adminRejectKYCPrompt('${t.id}')">✗ Reject</button>`:''}
       ${t.kyc==='rejected'?`<button class="btn btn-outline btn-sm" onclick="closeModal();adminUnlockKYC('${t.id}')">🔓 Unlock</button>`:''}
       <button class="btn btn-outline btn-sm" onclick="closeModal()">Close</button>
     </div>
@@ -4488,7 +4567,7 @@ function renderLandlordNotices(){
 
 function renderLandlordKYC(){
   const tenants=getLandlordTenants();
-  const pending=tenants.filter(t=>t.kyc!=='verified');
+  const pending=tenants.filter(t=>t.kyc!=='verified' && t.kyc_submitted_at);
   return `<div class="page-header"><h2>🪪 Tenant KYC Verification</h2><p>Review tenant identity verification status</p></div>
   <div class="stat-grid"><div class="stat-card green"><div class="icon-bg">✓</div><div class="label">Verified</div><div class="value">${tenants.filter(t=>t.kyc==='verified').length}</div></div><div class="stat-card warn"><div class="icon-bg">⏳</div><div class="label">Pending</div><div class="value">${pending.length}</div></div></div>
   <div class="card"><div class="card-header"><div class="card-title">Pending KYC Reviews</div></div>

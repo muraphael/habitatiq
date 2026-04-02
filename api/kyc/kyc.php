@@ -97,16 +97,27 @@ if (strpos($path, 'submit') !== false) {
 // ── Face & data verification ─────────────────────────────────
 if (strpos($path, 'verify') !== false) {
     requireMethod('POST');
-    requireRole(['admin', 'landlord']);
+    requireRole(['admin', 'landlord', 'tenant']);
     $body     = getBody();
     $tenantId = $body['tenant_id'] ?? '';
     if (!$tenantId) sendError('tenant_id required');
+
+    // Tenants can only verify themselves
+    if ($user['role'] === 'tenant' && $user['id'] !== $tenantId) {
+        sendError('Unauthorized', 403);
+    }
 
     // Load tenant
     $tStmt = $db->prepare("SELECT * FROM tenants WHERE id=? LIMIT 1");
     $tStmt->execute([$tenantId]);
     $tenant = $tStmt->fetch();
     if (!$tenant) sendError('Tenant not found', 404);
+
+    // Check for lockout (Tenants only)
+    if ($user['role'] === 'tenant' && $tenant['kyc_lock_until'] && strtotime($tenant['kyc_lock_until']) > time()) {
+        $timeLeft = ceil((strtotime($tenant['kyc_lock_until']) - time()) / 3600);
+        sendError("KYC verification is locked due to too many failed attempts (" . ($tenant['kyc_attempts']??0) . "). Please try again in {$timeLeft} hours or contact support.");
+    }
 
     // Load their docs
     $docStmt = $db->prepare("SELECT doc_type, file_path FROM kyc_documents WHERE tenant_id=?");
@@ -126,19 +137,9 @@ if (strpos($path, 'verify') !== false) {
 
     $result = performKYCVerification($tenant, $docs, $body);
 
-    // Save verification result
-    $db->prepare("
-        INSERT INTO kyc_verifications
-            (tenant_id, face_match_score, name_match_score, id_match_score, overall_score,
-             face_match_result, name_match_result, id_match_result, verified_by, verified_at, notes)
-        VALUES (?,?,?,?,?,?,?,?,?,NOW(),?)
-        ON DUPLICATE KEY UPDATE
-            face_match_score=VALUES(face_match_score), name_match_score=VALUES(name_match_score),
-            id_match_score=VALUES(id_match_score), overall_score=VALUES(overall_score),
-            face_match_result=VALUES(face_match_result), name_match_result=VALUES(name_match_result),
-            id_match_result=VALUES(id_match_result), verified_by=VALUES(verified_by),
-            verified_at=VALUES(verified_at), notes=VALUES(notes)
-    ")->execute([
+    // Update verification result in DB
+    $db->prepare("INSERT INTO kyc_verifications (tenant_id, face_match_score, name_match_score, id_match_score, overall_score, face_match_result, name_match_result, id_match_result, notes) VALUES (?,?,?,?,?,?,?,?,?)")
+       ->execute([
         $tenantId,
         $result['face_match_score'],
         $result['name_match_score'],
@@ -147,15 +148,47 @@ if (strpos($path, 'verify') !== false) {
         $result['face_match_result'],
         $result['name_match_result'],
         $result['id_match_result'],
-        $user['id'],
         $result['notes'],
     ]);
 
-    auditLog('kyc_verify', 'kyc',
-        "Verification run for {$tenant['name']} — overall: {$result['overall_score']}% | face: {$result['face_match_result']}",
+    // Update attempts and lockout
+    if (!$result['is_match'] || $result['overall_score'] < 90) {
+        $attempts = ($tenant['kyc_attempts'] ?? 0) + 1;
+        $lockUntil = null;
+        if ($attempts >= 10) {
+            $lockUntil = date('Y-m-d H:i:s', strtotime('+24 hours'));
+            auditLog('kyc_locked', 'kyc', "Tenant {$tenant['name']} locked out for 24h after {$attempts} failed attempts", $db);
+        }
+        $db->prepare("UPDATE tenants SET kyc_attempts = ?, kyc_lock_until = ? WHERE id = ?")
+           ->execute([$attempts, $lockUntil, $tenantId]);
+        $result['attempts_remaining'] = max(0, 10 - $attempts);
+        if ($lockUntil) $result['locked_until'] = $lockUntil;
+    } else {
+        // Success: Clear attempts
+        $db->prepare("UPDATE tenants SET kyc_attempts = 0, kyc_lock_until = NULL WHERE id = ?")
+           ->execute([$tenantId]);
+        $result['attempts_remaining'] = 10;
+    }
+
+    // AUTO-APPROVAL LOGIC:
+    // If overall score is >= 90 and is_match is true, auto-verify the tenant
+    if ($result['is_match'] && $result['overall_score'] >= 90) {
+        $db->prepare("UPDATE tenants SET kyc_status='verified', kyc_reviewed_at=NOW(), kyc_reviewed_by='System (Auto)' WHERE id=?")
+           ->execute([$tenantId]);
+        
+        // Also auto-approve their application if it's pending
+        $db->prepare("UPDATE tenant_applications SET status='approved', decided_at=NOW() WHERE tenant_id=? AND status='pending'")
+           ->execute([$tenantId]);
+        
+        auditLog('kyc_auto_approved', 'kyc', "Tenant {$tenant['name']} auto-verified. Overall score: {$result['overall_score']}%", $db);
+        $result['auto_verified'] = true;
+    }
+
+    auditLog('kyc_verify', 'kyc', 
+        "Verification run for {$tenant['name']} — overall: {$result['overall_score']}% | face: {$result['face_match_result']}", 
         $db);
 
-    sendSuccess($result, 'Verification complete');
+    sendSuccess($result, $result['auto_verified'] ? 'Auto-verification successful. Tenant verified.' : 'Verification complete');
 }
 
 // ── Get KYC documents & verification result ──────────────────
