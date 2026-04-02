@@ -1,0 +1,92 @@
+Options -Indexes
+
+# ============================================================
+# HabitatIQ — Apache Router
+# Place at: htdocs/habitatiq/.htaccess
+# ============================================================
+
+# Enable CORS for all API routes
+<IfModule mod_headers.c>
+    Header always set Access-Control-Allow-Origin "*"
+    Header always set Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
+    Header always set Access-Control-Allow-Headers "Content-Type, Authorization, X-Requested-With"
+    Header always set Access-Control-Allow-Credentials "true"
+</IfModule>
+
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteBase /habitatiq/
+
+    # Handle OPTIONS preflight
+    RewriteCond %{REQUEST_METHOD} OPTIONS
+    RewriteRule ^ - [R=200,L]
+
+    # Route /api/auth/*
+    RewriteRule ^api/auth/login$           api/auth/login.php          [L,QSA]
+    RewriteRule ^api/auth/logout$          api/auth/logout.php         [L,QSA]
+    RewriteRule ^api/auth/register/tenant$ api/auth/register_tenant.php [L,QSA]
+    RewriteRule ^api/auth/register/landlord$ api/auth/register_landlord.php [L,QSA]
+
+    # Route /api/tenants/*
+    RewriteRule ^api/tenants$              api/tenants/index.php       [L,QSA]
+    RewriteRule ^api/tenants/action$       api/tenants/action.php      [L,QSA]
+
+    # Route /api/properties/*
+    RewriteRule ^api/properties$           api/properties/index.php    [L,QSA]
+    RewriteRule ^api/properties/update$    api/properties/index.php    [L,QSA]
+
+    # Route /api/units/*
+    RewriteRule ^api/units$                api/units/action.php        [L,QSA]
+    RewriteRule ^api/units/action$         api/units/action.php        [L,QSA]
+
+    # Route /api/kyc/*
+    RewriteRule ^api/kyc/upload$           api/kyc/kyc.php             [L,QSA]
+    RewriteRule ^api/kyc/submit$           api/kyc/kyc.php             [L,QSA]
+    RewriteRule ^api/kyc/verify$           api/kyc/kyc.php             [L,QSA]
+    RewriteRule ^api/kyc/documents$        api/kyc/kyc.php             [L,QSA]
+
+    # Route /api/payments/*
+    RewriteRule ^api/payments$             api/payments/index.php      [L,QSA]
+
+    # Route /api/notices/*
+    RewriteRule ^api/notices$              api/notices/index.php       [L,QSA]
+
+    # Route /api/clearance/*
+    RewriteRule ^api/clearance$            api/clearance/index.php     [L,QSA]
+
+    # Route /api/landlords/*
+    RewriteRule ^api/landlords/approvals$  api/landlords/approvals.php [L,QSA]
+
+    # Route /api/audit
+    RewriteRule ^api/audit$                api/audit/index.php         [L,QSA]
+
+    # Serve uploads directly
+    RewriteRule ^uploads/(.*)$             uploads/$1                  [L]
+
+    # All other requests → main app
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteRule ^(?!api/)                  index.html                  [L]
+</IfModule>
+
+# PHP settings
+<IfModule mod_php.c>
+    php_value upload_max_filesize 10M
+    php_value post_max_size 10M
+    php_value max_execution_time 60
+    php_value session.cookie_httponly 1
+    php_value session.cookie_samesite Lax
+</IfModule>
+
+# Security headers
+<IfModule mod_headers.c>
+    Header set X-Content-Type-Options "nosniff"
+    Header set X-Frame-Options "SAMEORIGIN"
+    Header set X-XSS-Protection "1; mode=block"
+</IfModule>
+
+# Deny access to sensitive files
+<FilesMatch "\.(sql|log|env|ini|sh)$">
+    Order allow,deny
+    Deny from all
+</FilesMatch>
