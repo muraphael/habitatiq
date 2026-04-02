@@ -1228,6 +1228,9 @@ async function loadStateFromAPI(){
         kycPath:a.kyc_path, message:a.message, submittedAt:a.submitted_at, status:a.status
       }));
     }
+    // Load Analytics
+    const anaRes = await apiGet('/analytics/index.php');
+    if(anaRes.success) STATE.analytics = anaRes.data.summary;
     // Normalize properties to match frontend expected format
     if(STATE.properties.length){
       STATE.properties = STATE.properties.map(p=>({
@@ -1406,9 +1409,19 @@ function addAuditLog(action, entity, detail){
   if(STATE.auditLog.length > 100) STATE.auditLog.pop(); // keep last 100
 }
 
+function downloadReport(action){
+  const token = localStorage.getItem('habitatiq_token');
+  if(!token) {
+    showModal('Authentication Required','Please log in again to generate reports.');
+    return;
+  }
+  window.open(`${API_BASE}/reports/index.php?action=${action}&token=${token}`);
+}
+
 const STATE = {
   portal: 'admin',
   activePage: 'dashboard',
+  analytics: {},
   currentUser: {id:'U001',name:'John Mwangi',role:'admin',email:'admin@habitatiq.co.ke'},
   landlords: [
     {id:'LL001',name:'Wanjiku Holdings Ltd',email:'wanjiku@holdings.co.ke',phone:'0701234567',properties:['P001','P004'],status:'active',joined:'2023-06-15',tenants:49,password:'demo123'},
@@ -1693,7 +1706,7 @@ function renderDashboard(){
     <div class="stat-card warn"><div class="icon-bg">⏳</div><div class="label">Pending KYC</div><div class="value">${pendingKYC}</div><div class="sub">Awaiting verification</div></div>
     <div class="stat-card red"><div class="icon-bg">💸</div><div class="label">Total Arrears</div><div class="value">KES ${(totalArrears/1000).toFixed(0)}K</div><div class="sub trend-dn">↑ Unpaid obligations</div></div>
     <div class="stat-card blue"><div class="icon-bg">🏢</div><div class="label">Properties</div><div class="value">${STATE.properties.length}</div><div class="sub">${STATE.properties.reduce((s,p)=>s+p.units,0)} total units</div></div>
-    <div class="stat-card green"><div class="icon-bg">💰</div><div class="label">Monthly Revenue</div><div class="value">KES 1.8M</div><div class="sub trend-up">↑ 94% collected</div></div>
+    <div class="stat-card ${STATE.analytics.collection?.trend || 'green'}"><div class="icon-bg">💰</div><div class="label">Monthly Revenue</div><div class="value">${STATE.analytics.collection?.value || 'KES 1.8M'}</div><div class="sub trend-up">${STATE.analytics.collection?.sub || '↑ 94% collected'}</div></div>
     <div class="stat-card warn"><div class="icon-bg">🔧</div><div class="label">Open Tickets</div><div class="value">3</div><div class="sub">2 high priority</div></div>
   </div>
   <div class="grid2">
@@ -2125,11 +2138,29 @@ function renderLandlords(){
 
 function renderAnalytics(){
   return `<div class="page-header"><h2>📈 Analytics & Reports</h2><p>Automated report generation · Exportable data · System insights</p></div>
-  <div class="action-bar"><button class="btn btn-primary">⬇ Generate PDF Report</button><button class="btn btn-outline">📊 Export Excel</button><button class="btn btn-outline">📧 Email Report</button><select class="form-control" style="width:160px"><option>March 2025</option><option>February 2025</option><option>January 2025</option></select></div>
-  <div class="grid3">${[['Occupancy Rate','87%','↑ +3% vs last month','green'],['Rent Collection','94%','KES 1.69M of 1.8M','green'],['KYC Completion','83%','5 of 6 tenants','blue'],['Clearance Rate','33%','2 cleared, 4 pending','warn'],['Avg Tenancy','14 mo','Across all properties','blue'],['Arrears Ratio','22%','3 tenants in arrears','red']].map(([l,v,s,cls])=>`<div class="stat-card ${cls}"><div class="icon-bg">📊</div><div class="label">${l}</div><div class="value">${v}</div><div class="sub">${s}</div></div>`).join('')}</div>
+  <div class="action-bar">
+    <button class="btn btn-primary" onclick="window.open(API_BASE+'/reports/index.php?action=financial_summary&token='+localStorage.getItem('habitatiq_token'))">⬇ Generate PDF Report</button>
+    <button class="btn btn-outline" onclick="window.open(API_BASE+'/reports/index.php?action=tenant_report&token='+localStorage.getItem('habitatiq_token'))">📊 Export Excel</button>
+    <button class="btn btn-outline">📧 Email Report</button>
+    <select class="form-control" style="width:160px"><option>${new Date().toLocaleString('default',{month:'long',year:'numeric'})}</option></select>
+  </div>
+  <div class="grid3">${Object.values(STATE.analytics || {}).map(ana => `
+    <div class="stat-card ${ana.trend || 'blue'}">
+      <div class="icon-bg">📊</div>
+      <div class="label">${ana.label}</div>
+      <div class="value">${ana.value}</div>
+      <div class="sub">${ana.sub}</div>
+    </div>`).join('')}</div>
   <div class="grid2">
     <div class="card"><div class="card-title" style="margin-bottom:14px">Rent Collection Trend</div>${['Jan','Feb','Mar','Apr','May','Jun'].map((m,i)=>{const pcts=[78,82,88,85,91,94];return `<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px"><span style="font-size:12px;width:24px;color:var(--text3)">${m}</span><div style="flex:1;height:18px;background:var(--bg);border-radius:4px;overflow:hidden"><div style="width:${pcts[i]}%;height:100%;background:var(--primary);border-radius:4px;display:flex;align-items:center;justify-content:end;padding-right:6px"><span style="font-size:10px;color:#fff;font-weight:600">${pcts[i]}%</span></div></div></div>`;}).join('')}</div>
-    <div class="card"><div class="card-title" style="margin-bottom:14px">Available Report Types</div>${[['📊','Tenant Status Report','Active, flagged, cleared tenants summary'],['💰','Financial Summary','Revenue, arrears, payment history'],['🪪','KYC Compliance Report','Verification rates by region'],['✅','Clearance Registry Export','Full clearance ledger'],['🔒','Lockout Audit Report','Blocked tenants & reasons'],['🏢','Occupancy Report','Unit utilization by property']].map(([ic,t,d])=>`<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--border)"><span style="font-size:18px">${ic}</span><div style="flex:1"><div style="font-size:13.5px;font-weight:500">${t}</div><div style="font-size:11.5px;color:var(--text3)">${d}</div></div><button class="btn btn-outline btn-sm">Generate</button></div>`).join('')}</div>
+    <div class="card"><div class="card-title" style="margin-bottom:14px">Available Report Types</div>${[
+      ['📊','Tenant Status Report','Active, flagged, cleared tenants summary', 'tenant_report'],
+      ['💰','Financial Summary','Revenue, arrears, payment history', 'financial_summary'],
+      ['🪪','KYC Compliance Report','Verification rates by region', 'kyc_audit'],
+      ['✅','Clearance Registry Export','Full clearance ledger', 'tenant_report'],
+      ['🔒','Lockout Audit Report','Blocked tenants & reasons', 'tenant_report'],
+      ['🏢','Occupancy Report','Unit utilization by property', 'tenant_report']
+    ].map(([ic,t,d,act])=>`<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--border)"><span style="font-size:18px">${ic}</span><div style="flex:1"><div style="font-size:13.5px;font-weight:500">${t}</div><div style="font-size:11.5px;color:var(--text3)">${d}</div></div><button class="btn btn-outline btn-sm" onclick="downloadReport('${act}')">Generate</button></div>`).join('')}</div>
   </div>`;
 }
 
@@ -4572,7 +4603,20 @@ function renderLandlordAnalytics(){
   const props=getLandlordProperties();
   const totalOccupancy=Math.round(props.reduce((s,p)=>s+p.occupied,0)/props.reduce((s,p)=>s+p.units,0)*100);
   return `<div class="page-header"><h2>📈 Analytics & Reports</h2><p>Property performance insights</p></div>
-  <div class="grid3">${[['Occupancy Rate',totalOccupancy+'%','Properties filled','green'],['Monthly Revenue','KES '+(props.reduce((s,p)=>s+p.monthly_income,0)/1000).toFixed(0)+'K','Expected income','green'],['Tenant Base',getLandlordTenants().length+' tenants','Active tenants','blue']].map(([l,v,s,cls])=>`<div class="stat-card ${cls}"><div class="icon-bg">📊</div><div class="label">${l}</div><div class="value">${v}</div><div class="sub">${s}</div></div>`).join('')}</div>`;
+  <div class="action-bar">
+    <button class="btn btn-primary" onclick="downloadReport('financial_summary')">⬇ Generate PDF Report</button>
+    <button class="btn btn-outline" onclick="downloadReport('tenant_report')">📊 Export Excel</button>
+    <select class="form-control" style="width:160px"><option>${new Date().toLocaleString('default',{month:'long',year:'numeric'})}</option></select>
+  </div>
+  <div class="grid3">${[['Occupancy Rate',totalOccupancy+'%','Properties filled','green'],['Monthly Revenue','KES '+(props.reduce((s,p)=>s+p.monthly_income,0)/1000).toFixed(0)+'K','Expected income','green'],['Tenant Base',getLandlordTenants().length+' tenants','Active tenants','blue']].map(([l,v,s,cls])=>`<div class="stat-card ${cls}"><div class="icon-bg">📊</div><div class="label">${l}</div><div class="value">${v}</div><div class="sub">${s}</div></div>`).join('')}</div>
+  <div class="grid2">
+    <div class="card"><div class="card-title" style="margin-bottom:14px">Available Report Types</div>${[
+      ['📊','My Tenant List','Active, flagged, cleared tenants details', 'tenant_report'],
+      ['💰','Finance Summary','Rent collection & arrears for your properties', 'financial_summary'],
+      ['🪪','KYC Status Audit','Verification status of your tenants', 'kyc_audit'],
+      ['🚪','Occupancy Report','Unit-by-unit listing for your properties', 'tenant_report']
+    ].map(([ic,t,d,act])=>`<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--border)"><span style="font-size:18px">${ic}</span><div style="flex:1"><div style="font-size:13.5px;font-weight:500">${t}</div><div style="font-size:11.5px;color:var(--text3)">${d}</div></div><button class="btn btn-outline btn-sm" onclick="downloadReport('${act}')">Generate</button></div>`).join('')}</div>
+  </div>`;
 }
 
 function renderLandlordUnits(){

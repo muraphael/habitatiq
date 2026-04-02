@@ -62,7 +62,7 @@ $emailCheck->execute([$email]);
 if ($emailCheck->fetch()) sendError('This email address is already registered.');
 
 // Check unit is vacant
-$unitCheck = $db->prepare("SELECT id, status, rent, property_id FROM units WHERE id=? LIMIT 1");
+$unitCheck = $db->prepare("SELECT id, label, status, rent, property_id FROM units WHERE id=? LIMIT 1");
 $unitCheck->execute([$unitId]);
 $unit = $unitCheck->fetch();
 if (!$unit) sendError('Selected unit not found.');
